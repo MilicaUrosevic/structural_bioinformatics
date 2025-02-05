@@ -5,7 +5,7 @@ import math
 from Bio.PDB import PDBParser
 
 # Class for extracting C3' atoms from PDB files
-class PDBCleaner:
+class FindC3:
     def __init__(self, pdb_file_path):
         self.pdb_file_path = pdb_file_path
         self.c3_atoms = []
@@ -19,9 +19,8 @@ class PDBCleaner:
                     self.c3_atoms.append(parts[:11])  # Extract relevant columns
         return self.c3_atoms
 
-# Function to calculate Euclidean distance
+# Function to calculate distance
 def compute_distance(coord1, coord2):
-    """Computes Euclidean distance between two points in 3D space."""
     try:
         coord1 = np.array(list(map(float, coord1)))
         coord2 = np.array(list(map(float, coord2)))
@@ -72,9 +71,9 @@ def calculate_pseudo_energies(frequency_data):
 # Function to save results
 def save_energy_results(energy_values):
     """Saves pseudo-energy values into separate text files."""
-    os.makedirs("Energy", exist_ok=True)
+    os.makedirs("Output", exist_ok=True)
     for base_pair, scores in energy_values.items():
-        with open(f"Energy/{base_pair}", "w") as file:
+        with open(f"Output/{base_pair}", "w") as file:
             file.write("\n".join(map(str, scores)))
 
 # Main function
@@ -84,13 +83,13 @@ def main(pdb_directory):
     for pdb_filename in os.listdir(pdb_directory):
         if pdb_filename.endswith(".pdb"):
             pdb_path = os.path.join(pdb_directory, pdb_filename)
-            c3_atoms = PDBCleaner(pdb_path).process()
+            c3_atoms = FindC3(pdb_path).process()
             frequency_matrix = update_frequencies(c3_atoms, frequency_matrix)
     
     frequency_matrix = normalize_frequencies(frequency_matrix)
     pseudo_energies = calculate_pseudo_energies(frequency_matrix)
     save_energy_results(pseudo_energies)
-    print("Results have been saved in the 'Energy' directory.")
+    print("Results have been saved in the 'Output' directory.")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
