@@ -1,111 +1,118 @@
 import os
-import sys
-from Bio.PDB import PDBParser, Structure
-from Bio.PDB.Superimposer import Superimposer
-from scipy.spatial.transform import Rotation
-import numpy as np
-import pandas as pd
 import argparse
+import numpy as np
+import math
 import matplotlib.pyplot as plt
 
-def calculate_distance(coord1, coord2):
-    """Calculate the Euclidean distance between two points."""
-    return np.linalg.norm(np.array(coord1) - np.array(coord2))
+# Class for extracting C3' atoms from PDB files
+class FindC3:
+    def __init__(self, pdb_file_path):
+        self.pdb_file_path = pdb_file_path
+        self.c3_atoms = []
 
-def read_structure(filename: str) -> Structure:
-    """Reads a PDB structure file and parses it into a Structure object."""
-    parser = PDBParser(QUIET=True)
-    return parser.get_structure("RNA", filename)
+    def process(self):
+        """Extracts only C3' atoms from a PDB file using fixed-width parsing."""
+        with open(self.pdb_file_path, 'r') as pdb_file:
+            for line in pdb_file:
+                if line.startswith('ATOM') and "C3'" in line:
+                    atom_name = line[12:16].strip()
+                    res_name = line[17:20].strip()
+                    chain_id = line[21].strip()
+                    res_num = line[22:26].strip()
+                    x = float(line[30:38].strip())
+                    y = float(line[38:46].strip())
+                    z = float(line[46:54].strip())
+                    self.c3_atoms.append([atom_name, res_name, chain_id, res_num, x, y, z])
+        return self.c3_atoms
 
-def extract_c3_atoms(structure: Structure):
-    """Extracts coordinates of C3' atoms from a given structure."""
-    return np.array([
-        atom.get_coord() for atom in structure.get_atoms() if atom.get_name() == "C3'"
-    ])
+# Function to calculate Euclidean distance
+def distance_calculator(coord1, coord2):
+    coord1 = np.array(list(map(float, coord1)))
+    coord2 = np.array(list(map(float, coord2)))
+    return np.linalg.norm(coord1 - coord2)
 
-def compute_distance_distributions(c3_coords):
-    """Compute distance distributions for given C3' atom coordinates."""
-    distributions = {pair: np.zeros(20) for pair in ["AA", "AU", "AC", "AG", "UU", "UC", "UG", "CC", "CG", "GG"]}
-    total_counts = {pair: 0 for pair in distributions}
+# Function to classify base pairs based on distance and sequence constraints
+def bp_attribution(c3_list, frequency):
+    for i, res1 in enumerate(c3_list):
+        for j, res2 in enumerate(c3_list[i+1:], start=i+1):
+            if res1[2] == res2[2] and (int(res1[3]) + 4) <= int(res2[3]):
+                bp = ''.join(sorted((res1[1] + res2[1])))
+                dist = distance_calculator(res1[4:7], res2[4:7])
+                if 0 <= dist <= 20:
+                    int_dist = math.floor(dist)
+                    for bp_tot in frequency:
+                        if bp == bp_tot[0]:
+                            bp_tot[1][int_dist] += 1
+                            frequency[-1][1][int_dist] += 1
+    return frequency
 
-    for i in range(len(c3_coords)):
-        for j in range(i + 4, len(c3_coords)):  # Minimum sequence separation of 4
-            distance = calculate_distance(c3_coords[i], c3_coords[j])
-            if distance <= 20:
-                bin_index = int(distance)  # Each bin has a width of 1 Å
-                pair = "XX"  # Placeholder for scoring logic
-                distributions[pair][bin_index] += 1
-                total_counts[pair] += 1
+# Function to normalize observed frequencies
+def normalize_frequencies(frequency):
+    for bp in frequency:
+        total = sum(bp[1])
+        if total != 0:
+            bp[1] = [val / total for val in bp[1]]
+    return frequency
 
-    return distributions, total_counts
-
-def compute_scores(distributions, total_counts):
-    """Compute log-ratio scores based on observed and reference frequencies."""
-    scores = {}
-    for pair, distribution in distributions.items():
-        pair_scores = []
-        for count in distribution:
-            observed_frequency = count / total_counts[pair] if total_counts[pair] > 0 else 0
-            reference_frequency = count / total_counts["XX"] if total_counts["XX"] > 0 else 0
-            if observed_frequency > 0 and reference_frequency > 0:
-                score = -np.log(observed_frequency / reference_frequency)
-                score = min(score, 10)  # Cap the score at 10
+# Function to compute pseudo-energy values
+def pseudo_energy(frequency):
+    score = []
+    for bp in frequency:
+        pe = []
+        for fobs, ref in zip(bp[1], frequency[-1][1]):
+            if fobs > 0 and ref > 0:
+                pseudo_score = -np.log(fobs / ref)
+                pe.append(min(pseudo_score, 10))
             else:
-                score = 10
-            pair_scores.append(score)
-        scores[pair] = pair_scores
-    return scores
+                pe.append(10)
+        score.append([bp[0], pe])
+    score.pop()
+    return score
 
-def plot_interaction_profiles(scores, output_folder):
-    """Plot interaction profiles for each pair of bases."""
-    os.makedirs(output_folder, exist_ok=True)
-    for pair, pair_scores in scores.items():
-        plt.figure(figsize=(8, 6))
-        plt.plot(range(len(pair_scores)), pair_scores, marker="o", linestyle="-", label=f"Pair: {pair}")
-        plt.title(f"Interaction Profile for {pair}")
-        plt.xlabel("Distance (Å)")
-        plt.ylabel("Score")
-        plt.ylim(0, 10)
-        plt.legend()
-        plt.grid(True)
-        plt.savefig(os.path.join(output_folder, f"{pair}_profile.png"))
-        plt.close()
+# Function to generate and save interaction profile plots
+def interaction_profile_plot(base_pair, scores):
+    x_values = np.arange(20)
+    y_values = [np.nan if score == 10 else score for score in scores]
+    
+    fig, ax = plt.subplots()
+    ax.plot(x_values, y_values, linewidth=2.0)
+    plt.title(f'Interaction Profile: {base_pair}')
+    ax.set_xlabel('Distance (Å)')
+    ax.set_ylabel('Pairwise Score')
+    ax.set_xlim(0, 20)
+    
+    os.makedirs('Plot', exist_ok=True)
+    plt.savefig(f'Plot/{base_pair}.png')
+    plt.close()
+
+# Main function
+def main(pdb_directory):
+    if not os.path.exists(pdb_directory):
+        print(f"Error: The directory '{pdb_directory}' does not exist.")
+        return
+    
+    frequency = [[bp, [0] * 20] for bp in ['AA', 'AU', 'AC', 'AG', 'UU', 'CU', 'GU', 'CC', 'CG', 'GG', 'XX']]
+    
+    pdb_files = [f for f in os.listdir(pdb_directory) if f.endswith(".pdb")]
+    if not pdb_files:
+        print(f"Error: No .pdb files found in '{pdb_directory}'.")
+        return
+    
+    for pdb_filename in pdb_files:
+        pdb_path = os.path.join(pdb_directory, pdb_filename)
+        c3_atoms = FindC3(pdb_path).process()
+        frequency = bp_attribution(c3_atoms, frequency)
+    
+    frequency = normalize_frequencies(frequency)
+    pseudo_energies = pseudo_energy(frequency)
+    
+    for base_pair, scores in pseudo_energies:
+        interaction_profile_plot(base_pair, scores)
+    
+    print("Plots have been saved in the 'Plot' directory.")
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="RNA Folding Objective Function Training Script")
-    parser.add_argument("--pdb_folder", type=str, required=True, help="Path to the folder containing PDB files")
-    parser.add_argument("--output_folder", type=str, required=True, help="Path to the folder to save output scores and plots")
+    parser = argparse.ArgumentParser()
+    parser.add_argument("pdb_directory", help="Path to the directory containing PDB files.")
     args = parser.parse_args()
-
-    pdb_folder = args.pdb_folder
-    output_folder = args.output_folder
-    os.makedirs(output_folder, exist_ok=True)
-
-    all_distributions = {}
-    all_total_counts = {}
-
-    for pdb_file in os.listdir(pdb_folder):
-        if pdb_file.endswith(".pdb"):
-            pdb_path = os.path.join(pdb_folder, pdb_file)
-            structure = read_structure(pdb_path)
-            c3_coords = extract_c3_atoms(structure)
-            distributions, total_counts = compute_distance_distributions(c3_coords)
-
-            for pair in distributions:
-                if pair not in all_distributions:
-                    all_distributions[pair] = np.zeros(20)
-                    all_total_counts[pair] = 0
-                all_distributions[pair] += distributions[pair]
-                all_total_counts[pair] += total_counts[pair]
-
-    scores = compute_scores(all_distributions, all_total_counts)
-
-    for pair, pair_scores in scores.items():
-        output_file = os.path.join(output_folder, f"{pair}_scores.txt")
-        with open(output_file, "w") as f:
-            for score in pair_scores:
-                f.write(f"{score}\n")
-
-    plot_interaction_profiles(scores, output_folder)
-
-    print(f"Results and plots have been saved in the folder: {output_folder}")
+    main(args.pdb_directory)
